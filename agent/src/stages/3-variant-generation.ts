@@ -44,10 +44,11 @@ export async function runVariantGeneration(
 ): Promise<GeneratedFiles> {
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
 
-  const currentStepSource = await loadCurrentStepSource(config, problemSet.flagged_step_index)
+  const stepContext = await loadStepContext(config, problemSet.flagged_step_index)
+  console.log(`[Stage 3] Call signature from page.tsx: ${stepContext.callSignature}`)
 
   console.log(`[Stage 3] Generating 3 React variants for step: ${problemSet.flagged_step} (model: ${config.openaiCodegenModel})`)
-  const rawVariants = await generateVariants(openai, config.openaiCodegenModel, currentStepSource, problemSet, patternLibrary)
+  const rawVariants = await generateVariants(openai, config.openaiCodegenModel, stepContext, problemSet, patternLibrary)
 
   console.log(`[Stage 3] Verifying generated TypeScript`)
   const variants = await verifyAndRepairVariants(rawVariants, problemSet.flagged_step_index)
@@ -57,7 +58,7 @@ export async function runVariantGeneration(
 
   const configCode = buildOnboardingConfig(selection.selected, problemSet.flagged_step_index)
   const screenName = STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? `Screen${problemSet.flagged_step_index}`
-  const selectedCode = variants.find((v) => v.id === selection.selected)?.code ?? currentStepSource
+  const selectedCode = variants.find((v) => v.id === selection.selected)?.code ?? stepContext.currentSource
   // Guarantee the deployed file has the correct named export the app imports
   const replacedStepCode = ensureNamedExport(selectedCode, screenName)
   const replacedStepFilename = `app/onboarding/screens/${screenName}.tsx`
@@ -78,42 +79,72 @@ export async function runVariantGeneration(
   return files
 }
 
-async function loadCurrentStepSource(config: Config, stepIndex: number): Promise<string> {
-  const screenName = STEP_SCREEN_MAP[stepIndex] ?? `Screen${stepIndex}`
-  const githubPath = `app/onboarding/screens/${screenName}.tsx`
+type StepContext = {
+  currentSource: string
+  onboardingTypes: string
+  callSignature: string  // how page.tsx renders this specific screen
+}
 
-  // 1. Try local co-located repo first
-  const localPath = path.join(process.cwd(), "..", "nutribot", githubPath)
+async function fetchGitHubFile(config: Config, filePath: string): Promise<string | null> {
   try {
-    return await readFile(localPath, "utf-8")
-  } catch {
-    // fall through
-  }
-
-  // 2. Fetch live from GitHub API so we always have the real current source
-  try {
-    const url = `https://api.github.com/repos/${config.githubOwner}/${config.githubRepo}/contents/${githubPath}`
+    const url = `https://api.github.com/repos/${config.githubOwner}/${config.githubRepo}/contents/${filePath}`
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${config.githubToken}`,
         Accept: "application/vnd.github.v3+json",
       },
     })
-    if (response.ok) {
-      const data = (await response.json()) as { content: string; encoding: string }
-      if (data.encoding === "base64") {
-        return Buffer.from(data.content.replace(/\n/g, ""), "base64").toString("utf-8")
-      }
+    if (!response.ok) return null
+    const data = (await response.json()) as { content: string; encoding: string }
+    if (data.encoding === "base64") {
+      return Buffer.from(data.content.replace(/\n/g, ""), "base64").toString("utf-8")
     }
+    return null
   } catch {
-    // fall through
+    return null
+  }
+}
+
+// Extract the JSX line in page.tsx that renders the given component
+function extractCallSignature(pageSource: string, screenName: string): string {
+  const lines = pageSource.split("\n")
+  const line = lines.find((l) => l.includes(`<${screenName}`) && !l.includes("import"))
+  return line?.trim() ?? `<${screenName} data={data} onNext={goNext} onBack={goBack} />`
+}
+
+async function loadStepContext(config: Config, stepIndex: number): Promise<StepContext> {
+  const screenName = STEP_SCREEN_MAP[stepIndex] ?? `Screen${stepIndex}`
+  const screenPath = `app/onboarding/screens/${screenName}.tsx`
+
+  // Try local first, then GitHub
+  let currentSource: string | null = null
+  const localPath = path.join(process.cwd(), "..", "nutribot", screenPath)
+  try {
+    currentSource = await readFile(localPath, "utf-8")
+  } catch {
+    currentSource = await fetchGitHubFile(config, screenPath)
   }
 
-  // 3. Minimal named-export placeholder (matches NutriBot export convention)
+  const [onboardingTypes, pageSource] = await Promise.all([
+    fetchGitHubFile(config, "lib/onboarding-types.ts"),
+    fetchGitHubFile(config, "app/onboarding/page.tsx"),
+  ])
+
+  const callSignature = pageSource ? extractCallSignature(pageSource, screenName) : `<${screenName} data={data} />`
+
+  return {
+    currentSource: currentSource ?? buildMinimalPlaceholder(screenName),
+    onboardingTypes: onboardingTypes ?? "",
+    callSignature,
+  }
+}
+
+function buildMinimalPlaceholder(screenName: string): string {
   return `"use client"
 import React from "react"
+import type { OnboardingData } from "@/lib/onboarding-types"
 
-type Props = { onNext: () => void; onBack: () => void }
+type Props = { data: OnboardingData; onNext: () => void; onBack: () => void }
 
 export function ${screenName}({ onNext }: Props) {
   return (
@@ -129,60 +160,72 @@ export function ${screenName}({ onNext }: Props) {
 async function generateVariants(
   openai: OpenAI,
   model: string,
-  currentSource: string,
+  stepContext: StepContext,
   problemSet: ProblemSet,
   patternLibrary: PatternLibrary
 ): Promise<GeneratedVariant[]> {
+  const screenName = STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"
   const topTechniques = patternLibrary.top_techniques
     .slice(0, 5)
     .map((t) => `• ${t.technique}: ${t.implementation}`)
     .join("\n")
 
+  const typesBlock = stepContext.onboardingTypes
+    ? `\nSHARED TYPES (DO NOT REDEFINE — import from "@/lib/onboarding-types"):
+\`\`\`ts
+${stepContext.onboardingTypes}
+\`\`\``
+    : ""
+
   const prompt = `You are an expert React/Tailwind developer and conversion rate optimizer.
 
-The NutriBot onboarding step "${problemSet.flagged_step}" has a high drop-off rate.
+The NutriBot onboarding step "${problemSet.flagged_step}" has a 95%+ drop-off rate.
 
 Top competitor techniques to incorporate:
 ${topTechniques}
 
 Friction reducers: ${patternLibrary.friction_reducers.join(", ")}
 Trust signals: ${patternLibrary.trust_signals.join(", ")}
-Dominant tone from competitors: ${patternLibrary.dominant_tone}
+Dominant tone: ${patternLibrary.dominant_tone}
+${typesBlock}
 
-Generate THREE complete, production-ready React + Tailwind TSX components, one for each strategy below.
-CRITICAL EXPORT RULE: Each component MUST use a NAMED export — NOT a default export.
-The component name must exactly match the original file name (e.g. "Paywall", "GoalSelection").
-NutriBot imports screens as named exports: import { Paywall } from "./screens/Paywall"
-Include all imports. Use Tailwind only (no external UI libs). Mobile-first design.
-Preserve the existing props interface (onNext, onBack, data, setData) from the current component.
+EXACT CALL SITE — page.tsx renders this component as:
+  ${stepContext.callSignature}
+Your component's props MUST match this call site exactly. Do NOT add or remove props.
 
-CURRENT BROKEN COMPONENT (reference for functionality, redesign the UX):
+CURRENT COMPONENT (preserve its props interface and imports, redesign the UX):
 \`\`\`tsx
-${currentSource}
+${stepContext.currentSource}
 \`\`\`
 
-Output EXACTLY this format — three code blocks labeled VARIANT_A, VARIANT_B, VARIANT_C.
-Each block must start with "use client" and use export function (NAMED export, no default):
+RULES:
+1. NAMED export only: export function ${screenName}(...)  — never export default
+2. Import OnboardingData from "@/lib/onboarding-types" if data prop is used
+3. "use client" directive at top of every file
+4. Tailwind only, mobile-first, no external UI libraries
+5. Props must match the call site above exactly
+
+Generate THREE complete components:
 
 ### VARIANT_A
 Strategy: ${VARIANT_STRATEGIES.A}
 \`\`\`tsx
 "use client"
-// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
+// full component — export function ${screenName}(...)
 \`\`\`
 
 ### VARIANT_B
 Strategy: ${VARIANT_STRATEGIES.B}
 \`\`\`tsx
 "use client"
-// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
+// full component — export function ${screenName}(...)
 \`\`\`
 
 ### VARIANT_C
 Strategy: ${VARIANT_STRATEGIES.C}
 \`\`\`tsx
 "use client"
-// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
+// full component — export function ${screenName}(...)
 \`\`\``
 
   const raw = await callCompletion(openai, {
