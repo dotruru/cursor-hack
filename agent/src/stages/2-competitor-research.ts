@@ -55,8 +55,17 @@ async function findMatchingScreenshots(screenshotsDir: string, stepIndex: number
     return []
   }
 
+  console.log(`[Stage 2] Directory: ${screenshotsDir} (${entries.length} files)`)
+
   const paddedIndex = String(stepIndex).padStart(2, "0")
-  const matched = entries.filter((name) => name.match(new RegExp(`_0?${paddedIndex}_`)) && name.endsWith(".png"))
+  // Match _07_ or _7_ style step markers
+  const regex = new RegExp(`_0*${String(stepIndex)}_`)
+  const matched = entries.filter((name) => regex.test(name) && name.endsWith(".png"))
+
+  if (matched.length === 0) {
+    console.warn(`[Stage 2] No files matched /${regex.source}/ for step ${stepIndex}. Available: ${entries.filter(e => e.endsWith(".png")).slice(0, 5).join(", ")}`)
+  }
+
   return matched.map((name) => path.join(screenshotsDir, name))
 }
 
