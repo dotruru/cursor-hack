@@ -65,37 +65,44 @@ async function fetchPostDeployMetrics(
   // In production: wait 24h then re-poll the same PostHog endpoints.
   // For the demo, we apply synthetic deltas to the baseline to simulate improvement.
   try {
+    const query = `
+      SELECT event, count() AS cnt
+      FROM events
+      WHERE event IN ('clicked_get_started', 'completed_onboarding', 'started_free_trial', 'cancelled_free_trial')
+        AND timestamp >= now() - INTERVAL 1 DAY
+      GROUP BY event
+    `.trim()
+
     const response = await fetch(
-      `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/funnel/`,
+      `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/query/`,
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${config.posthogPersonalApiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          insight: "FUNNELS",
-          events: [
-            { id: "clicked_get_started", order: 0 },
-            { id: "completed_onboarding", order: 1 },
-          ],
-          date_from: "-1d",
-          funnel_window_interval: 1,
-          funnel_window_interval_unit: "day",
-        }),
+        body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
       }
     )
 
     if (response.ok) {
-      const data = (await response.json()) as { result?: Array<{ count: number }> }
-      const steps = data.result ?? []
-      if (steps.length >= 2 && steps[0].count > 0) {
-        const liveCompletion = steps[1].count / steps[0].count
-        return {
-          onboarding_completion: liveCompletion,
-          trial_cancellation_rate: baseline.trial_cancellation_rate + SYNTHETIC_IMPROVEMENT.trial_cancellation,
-          conversion_rate: baseline.conversion_rate + SYNTHETIC_IMPROVEMENT.conversion_rate,
-          revenue_per_day: estimateRevenuePerDay(baseline.conversion_rate + SYNTHETIC_IMPROVEMENT.conversion_rate),
+      const data = (await response.json()) as { results?: Array<[string, number]>; error?: string }
+      if (!data.error && data.results) {
+        const counts: Record<string, number> = {}
+        for (const [event, count] of data.results) counts[event] = count
+
+        const started = counts["clicked_get_started"] ?? 0
+        const completed = counts["completed_onboarding"] ?? 0
+        const trialStarts = counts["started_free_trial"] ?? 0
+        const trialCancels = counts["cancelled_free_trial"] ?? 0
+
+        if (started > 0) {
+          return {
+            onboarding_completion: completed / started,
+            trial_cancellation_rate: trialStarts > 0 ? trialCancels / trialStarts : baseline.trial_cancellation_rate,
+            conversion_rate: trialStarts / Math.max(counts["viewed_paywall"] ?? started, 1),
+            revenue_per_day: estimateRevenuePerDay(trialStarts / Math.max(started, 1)),
+          }
         }
       }
     }

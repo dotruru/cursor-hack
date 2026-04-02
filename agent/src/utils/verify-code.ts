@@ -47,7 +47,8 @@ export async function verifyGeneratedVariants(variants: GeneratedVariant[]): Pro
 
 async function runTsc(tempDir: string, variants: GeneratedVariant[]): Promise<VerifyResult> {
   return new Promise((resolve) => {
-    const proc = spawn("npx", ["tsc", "--noEmit"], { cwd: tempDir, shell: true })
+    const tscBin = new URL("../../node_modules/.bin/tsc", import.meta.url).pathname
+    const proc = spawn(tscBin, ["--noEmit"], { cwd: tempDir, shell: false })
 
     let output = ""
     proc.stderr.on("data", (chunk: Buffer) => { output += chunk.toString() })

@@ -6,130 +6,111 @@ const TRIAL_CANCEL_THRESHOLD = 0.5
 const CONVERSION_LOW_THRESHOLD = 0.15
 const HIGH_INTENT_SESSION_THRESHOLD = 180 // 3 minutes
 
-// NutriBot onboarding funnel — matches posthog.tsx event names exactly
-const NUTRIBOT_FUNNEL_STEPS = [
-  { id: "clicked_get_started",       name: "clicked_get_started",       order: 0 },
-  { id: "viewed_goal_selection",      name: "viewed_goal_selection",      order: 1 },
-  { id: "viewed_body_stats",          name: "viewed_body_stats",          order: 2 },
-  { id: "viewed_activity_level",      name: "viewed_activity_level",      order: 3 },
-  { id: "viewed_diet_preferences",    name: "viewed_diet_preferences",    order: 4 },
-  { id: "viewed_your_plan",           name: "viewed_your_plan",           order: 5 },
-  { id: "viewed_paywall",             name: "viewed_paywall",             order: 6 },
-  { id: "completed_onboarding",       name: "completed_onboarding",       order: 7 },
-]
+// NutriBot onboarding funnel — matches lib/posthog.tsx event names exactly.
+// Order defines the expected user journey; drop-off is computed step-to-step.
+const FUNNEL_EVENT_SEQUENCE = [
+  "clicked_get_started",
+  "viewed_goal_selection",
+  "viewed_body_stats",
+  "viewed_activity_level",
+  "viewed_diet_preferences",
+  "viewed_your_plan",
+  "viewed_paywall",
+  "completed_onboarding",
+] as const
 
-type PostHogFunnelResult = {
-  result: Array<{
-    name: string
-    count: number
-    order: number
-  }>
+// Extra events needed for problem classification
+const EXTRA_EVENTS = ["started_free_trial", "cancelled_free_trial"] as const
+
+const ALL_TRACKED_EVENTS = [...FUNNEL_EVENT_SEQUENCE, ...EXTRA_EVENTS]
+
+type HogQLResult = {
+  results: Array<[string, number]>
+  columns: string[]
+  error?: string
 }
 
-export async function runAnalyticsIngestion(config: Config): Promise<{ funnelData: FunnelData; problemSet: ProblemSet }> {
+export async function runAnalyticsIngestion(
+  config: Config
+): Promise<{ funnelData: FunnelData; problemSet: ProblemSet }> {
   const funnelData = await fetchFunnelData(config)
   const problemSet = classifyProblems(funnelData, config.dropOffThreshold)
   return { funnelData, problemSet }
 }
 
 async function fetchFunnelData(config: Config): Promise<FunnelData> {
-  const steps = await withRetry(
-    () => fetchFunnelSteps(config),
-    { label: "PostHog funnel steps", attempts: 3 }
-  )
+  const eventCounts = await withRetry(() => fetchEventCounts(config), {
+    label: "PostHog HogQL event counts",
+    attempts: 3,
+  })
 
-  const [conversionRate, trialCancellationRate, avgSessionTime] = await Promise.all([
-    withRetry(() => fetchPaywallConversionRate(config), { label: "PostHog paywall conversion rate" }),
-    withRetry(() => fetchTrialCancellationRate(config), { label: "PostHog trial cancellation rate" }),
-    withRetry(() => fetchAvgSessionTime(config), { label: "PostHog avg session time" }),
-  ])
+  const steps = buildFunnelSteps(eventCounts)
+  const trialStarts = eventCounts["started_free_trial"] ?? 0
+  const trialCancels = eventCounts["cancelled_free_trial"] ?? 0
+  const paywallViews = eventCounts["viewed_paywall"] ?? 1
+
+  const conversionRate = trialStarts / Math.max(paywallViews, 1)
+  const trialCancellationRate = trialStarts > 0 ? trialCancels / trialStarts : 0
 
   return {
     steps,
     trial_cancellation_rate: trialCancellationRate,
     conversion_rate: conversionRate,
-    avg_session_time_seconds: avgSessionTime,
+    avg_session_time_seconds: 120, // PostHog session duration not available via HogQL without session_id join
   }
 }
 
-async function fetchFunnelSteps(config: Config): Promise<FunnelStep[]> {
+async function fetchEventCounts(config: Config): Promise<Record<string, number>> {
+  const eventList = ALL_TRACKED_EVENTS.map((e) => `'${e}'`).join(", ")
+
+  const query = `
+    SELECT event, count() AS cnt
+    FROM events
+    WHERE event IN (${eventList})
+      AND timestamp >= now() - INTERVAL 7 DAY
+    GROUP BY event
+  `.trim()
+
   const response = await fetch(
-    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/funnel/`,
+    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/query/`,
     {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.posthogPersonalApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        insight: "FUNNELS",
-        events: NUTRIBOT_FUNNEL_STEPS,
-        date_from: "-7d",
-        funnel_window_interval: 14,
-        funnel_window_interval_unit: "day",
-      }),
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query } }),
     }
   )
 
   if (!response.ok) {
-    throw new Error(`PostHog funnel API ${response.status}: ${await response.text()}`)
+    throw new Error(`PostHog query API ${response.status}: ${await response.text()}`)
   }
 
-  const data = (await response.json()) as PostHogFunnelResult
-  return buildFunnelSteps(data.result)
+  const data = (await response.json()) as HogQLResult
+
+  if (data.error) {
+    throw new Error(`PostHog HogQL error: ${data.error}`)
+  }
+
+  const counts: Record<string, number> = {}
+  for (const [event, count] of data.results) {
+    counts[event] = count
+  }
+  return counts
 }
 
-function buildFunnelSteps(result: PostHogFunnelResult["result"]): FunnelStep[] {
-  return result.map((step, idx) => {
-    const prevCount = idx === 0 ? step.count : result[idx - 1].count
-    const dropOffPct = prevCount > 0 ? 1 - step.count / prevCount : 0
+function buildFunnelSteps(counts: Record<string, number>): FunnelStep[] {
+  return FUNNEL_EVENT_SEQUENCE.map((event, idx) => {
+    const users = counts[event] ?? 0
+    const prevUsers = idx === 0 ? users : (counts[FUNNEL_EVENT_SEQUENCE[idx - 1]] ?? users)
+    const dropOffPct = prevUsers > 0 ? 1 - users / prevUsers : 0
     return {
-      name: step.name,
-      users: step.count,
-      drop_off_pct: Math.round(dropOffPct * 1000) / 1000,
+      name: event,
+      users,
+      drop_off_pct: Math.round(Math.max(0, dropOffPct) * 1000) / 1000,
     }
   })
-}
-
-// Paywall conversion = started_free_trial / viewed_paywall
-async function fetchPaywallConversionRate(config: Config): Promise<number> {
-  const [paywallViews, trialStarts] = await Promise.all([
-    fetchEventCount(config, "viewed_paywall"),
-    fetchEventCount(config, "started_free_trial"),
-  ])
-  if (paywallViews === 0) return 0.02
-  return trialStarts / paywallViews
-}
-
-async function fetchTrialCancellationRate(config: Config): Promise<number> {
-  const [trialStarts, trialCancels] = await Promise.all([
-    fetchEventCount(config, "started_free_trial"),
-    fetchEventCount(config, "cancelled_free_trial"),
-  ])
-  if (trialStarts === 0) return 0.62
-  return trialCancels / trialStarts
-}
-
-async function fetchEventCount(config: Config, eventId: string): Promise<number> {
-  const response = await fetch(
-    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
-    `events=${encodeURIComponent(JSON.stringify([{ id: eventId }]))}&date_from=-7d`,
-    { headers: { Authorization: `Bearer ${config.posthogPersonalApiKey}` } }
-  )
-  if (!response.ok) throw new Error(`PostHog event count API ${response.status} for ${eventId}`)
-  const data = (await response.json()) as { result?: { aggregated_value?: number } }
-  return data.result?.aggregated_value ?? 0
-}
-
-async function fetchAvgSessionTime(config: Config): Promise<number> {
-  const response = await fetch(
-    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
-    `events=${encodeURIComponent(JSON.stringify([{ id: "$pageview" }]))}&date_from=-7d`,
-    { headers: { Authorization: `Bearer ${config.posthogPersonalApiKey}` } }
-  )
-  if (!response.ok) throw new Error(`PostHog session time API ${response.status}`)
-  const data = (await response.json()) as { result?: { average_session_duration?: number } }
-  return data.result?.average_session_duration ?? 120
 }
 
 function classifyProblems(data: FunnelData, threshold: number): ProblemSet {
@@ -153,7 +134,7 @@ function classifyProblems(data: FunnelData, threshold: number): ProblemSet {
     ? "ONBOARDING_FRICTION"
     : types[0] ?? "ONBOARDING_FRICTION"
 
-  const flaggedStep = worstStep ?? data.steps[1]
+  const flaggedStep = worstStep ?? data.steps[data.steps.length - 1]
   const flaggedStepIndex = data.steps.findIndex((s) => s.name === flaggedStep.name)
 
   return {
@@ -167,11 +148,9 @@ function classifyProblems(data: FunnelData, threshold: number): ProblemSet {
 function findWorstDropOffStep(steps: FunnelStep[], threshold: number): FunnelStep | null {
   const overThreshold = steps.filter((s) => s.drop_off_pct > DROP_OFF_FRICTION_THRESHOLD)
   if (overThreshold.length === 0) {
-    const worst = steps.slice(1).reduce(
-      (max, s) => (s.drop_off_pct > max.drop_off_pct ? s : max),
-      steps[1]
-    )
-    return worst.drop_off_pct > threshold ? worst : null
+    const candidates = steps.filter((s) => s.drop_off_pct > threshold)
+    if (candidates.length === 0) return null
+    return candidates.reduce((max, s) => (s.drop_off_pct > max.drop_off_pct ? s : max))
   }
   return overThreshold.reduce((max, s) => (s.drop_off_pct > max.drop_off_pct ? s : max))
 }
