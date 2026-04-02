@@ -56,8 +56,10 @@ export async function runVariantGeneration(
   const selection = await selectVariant(openai, config.openaiCodegenModel, funnelData, problemSet, variants)
 
   const configCode = buildOnboardingConfig(selection.selected, problemSet.flagged_step_index)
-  const replacedStepCode = variants.find((v) => v.id === selection.selected)?.code ?? currentStepSource
   const screenName = STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? `Screen${problemSet.flagged_step_index}`
+  const selectedCode = variants.find((v) => v.id === selection.selected)?.code ?? currentStepSource
+  // Guarantee the deployed file has the correct named export the app imports
+  const replacedStepCode = ensureNamedExport(selectedCode, screenName)
   const replacedStepFilename = `app/onboarding/screens/${screenName}.tsx`
 
   const files: GeneratedFiles = {
@@ -78,21 +80,50 @@ export async function runVariantGeneration(
 
 async function loadCurrentStepSource(config: Config, stepIndex: number): Promise<string> {
   const screenName = STEP_SCREEN_MAP[stepIndex] ?? `Screen${stepIndex}`
-  // Look for nutribot co-located in the parent directory (monorepo layout)
-  const filePath = path.join(
-    process.cwd(),
-    "..",
-    "nutribot",
-    "app",
-    "onboarding",
-    "screens",
-    `${screenName}.tsx`
-  )
+  const githubPath = `app/onboarding/screens/${screenName}.tsx`
+
+  // 1. Try local co-located repo first
+  const localPath = path.join(process.cwd(), "..", "nutribot", githubPath)
   try {
-    return await readFile(filePath, "utf-8")
+    return await readFile(localPath, "utf-8")
   } catch {
-    return `// ${screenName}.tsx — source not found locally, generating fresh component\nexport default function ${screenName}() { return <div /> }`
+    // fall through
   }
+
+  // 2. Fetch live from GitHub API so we always have the real current source
+  try {
+    const url = `https://api.github.com/repos/${config.githubOwner}/${config.githubRepo}/contents/${githubPath}`
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${config.githubToken}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+    })
+    if (response.ok) {
+      const data = (await response.json()) as { content: string; encoding: string }
+      if (data.encoding === "base64") {
+        return Buffer.from(data.content.replace(/\n/g, ""), "base64").toString("utf-8")
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // 3. Minimal named-export placeholder (matches NutriBot export convention)
+  return `"use client"
+import React from "react"
+
+type Props = { onNext: () => void; onBack: () => void }
+
+export function ${screenName}({ onNext }: Props) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-white">
+      <button onClick={onNext} className="mt-6 w-full bg-black text-white py-3 rounded-xl">
+        Continue
+      </button>
+    </div>
+  )
+}`
 }
 
 async function generateVariants(
@@ -119,32 +150,39 @@ Trust signals: ${patternLibrary.trust_signals.join(", ")}
 Dominant tone from competitors: ${patternLibrary.dominant_tone}
 
 Generate THREE complete, production-ready React + Tailwind TSX components, one for each strategy below.
-Each component must be a self-contained default export named after the variant.
+CRITICAL EXPORT RULE: Each component MUST use a NAMED export — NOT a default export.
+The component name must exactly match the original file name (e.g. "Paywall", "GoalSelection").
+NutriBot imports screens as named exports: import { Paywall } from "./screens/Paywall"
 Include all imports. Use Tailwind only (no external UI libs). Mobile-first design.
+Preserve the existing props interface (onNext, onBack, data, setData) from the current component.
 
 CURRENT BROKEN COMPONENT (reference for functionality, redesign the UX):
 \`\`\`tsx
 ${currentSource}
 \`\`\`
 
-Output EXACTLY this format — three code blocks labeled VARIANT_A, VARIANT_B, VARIANT_C:
+Output EXACTLY this format — three code blocks labeled VARIANT_A, VARIANT_B, VARIANT_C.
+Each block must start with "use client" and use export function (NAMED export, no default):
 
 ### VARIANT_A
 Strategy: ${VARIANT_STRATEGIES.A}
 \`\`\`tsx
-// complete component code
+"use client"
+// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
 \`\`\`
 
 ### VARIANT_B
 Strategy: ${VARIANT_STRATEGIES.B}
 \`\`\`tsx
-// complete component code
+"use client"
+// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
 \`\`\`
 
 ### VARIANT_C
 Strategy: ${VARIANT_STRATEGIES.C}
 \`\`\`tsx
-// complete component code
+"use client"
+// complete component with: export function ${STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? "Screen"}(...) { ... }
 \`\`\``
 
   const raw = await callCompletion(openai, {
@@ -290,16 +328,37 @@ Return only the TSX code, no markdown fences.`
   return raw.replace(/```tsx?\n?/g, "").replace(/```\n?/g, "").trim()
 }
 
-function buildFallbackVariant(id: VariantId, stepIndex: number): string {
-  return `import React from "react"
+// If the LLM still generates a default export, rewrite it to a named export.
+// NutriBot imports all screens as named exports: import { Paywall } from "./screens/Paywall"
+function ensureNamedExport(code: string, componentName: string): string {
+  // Replace: export default function Foo  →  export function Foo
+  // Replace: export default function(     →  export function ComponentName(
+  // Replace: const Foo = ... ; export default Foo  →  export function Foo (handled by fallback)
+  return code
+    .replace(/export\s+default\s+function\s+\w+/, `export function ${componentName}`)
+    .replace(/export\s+default\s+function\s*\(/, `export function ${componentName}(`)
+}
 
-export default function Variant${id}() {
+function buildFallbackVariant(id: VariantId, stepIndex: number): string {
+  const screenName = STEP_SCREEN_MAP[stepIndex] ?? `Screen${stepIndex}`
+  return `"use client"
+import React from "react"
+
+type Props = { onNext: () => void; onBack?: () => void }
+
+export function ${screenName}({ onNext }: Props) {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-white">
-      <h1 className="text-2xl font-bold text-gray-900 mb-4">
-        Tell us about yourself
+      <h1 className="text-2xl font-bold text-gray-900 mb-4 text-center">
+        Your personalized plan is ready
       </h1>
-      <p className="text-gray-500 text-sm">Step ${stepIndex} — Variant ${id}</p>
+      <p className="text-gray-500 text-sm mb-8 text-center">Variant ${id} — Step ${stepIndex}</p>
+      <button
+        onClick={onNext}
+        className="w-full bg-black text-white py-4 rounded-2xl font-semibold text-lg"
+      >
+        Get Started
+      </button>
     </div>
   )
 }`
