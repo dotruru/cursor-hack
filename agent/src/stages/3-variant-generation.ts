@@ -132,8 +132,20 @@ async function loadStepContext(config: Config, stepIndex: number): Promise<StepC
 
   const callSignature = pageSource ? extractCallSignature(pageSource, screenName) : `<${screenName} data={data} />`
 
+  const source = currentSource ?? buildMinimalPlaceholder(screenName)
+
+  // If the current source defines its own incompatible data type, strip it so o3
+  // doesn't replicate the same broken interface. Detected by absence of OnboardingData.
+  const hasOnboardingData = source.includes("OnboardingData")
+  const sanitizedSource = hasOnboardingData
+    ? source
+    : source.replace(
+        /export interface \w+Props \{[\s\S]*?\}/m,
+        `// Props derived from call site: ${callSignature.trim()}`
+      )
+
   return {
-    currentSource: currentSource ?? buildMinimalPlaceholder(screenName),
+    currentSource: sanitizedSource,
     onboardingTypes: onboardingTypes ?? "",
     callSignature,
   }
