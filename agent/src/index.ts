@@ -29,6 +29,7 @@ function loadConfig(): Config {
     openaiApiKey: process.env.OPENAI_API_KEY!,
     posthogApiKey: process.env.POSTHOG_API_KEY!,
     posthogProjectId: process.env.POSTHOG_PROJECT_ID!,
+    posthogApiBaseUrl: derivePostHogApiBaseUrl(process.env.POSTHOG_HOST),
     githubToken: process.env.GITHUB_TOKEN!,
     githubOwner: process.env.GITHUB_OWNER!,
     githubRepo: process.env.GITHUB_REPO!,
@@ -80,6 +81,15 @@ function isDropOffAlert(body: Record<string, unknown>): boolean {
     dataEvent === "onboarding_complete" ||
     body.trigger === "drop_off_alert"
   )
+}
+
+// Maps ingestion host → REST API base URL
+// eu.i.posthog.com → eu.posthog.com  |  us.i.posthog.com → us.posthog.com
+function derivePostHogApiBaseUrl(host?: string): string {
+  const trimmed = host?.trim() ?? ""
+  if (trimmed.includes("eu.")) return "https://eu.posthog.com"
+  if (trimmed.includes("us.")) return "https://us.posthog.com"
+  return "https://us.posthog.com"
 }
 
 function pct(n: number): string {

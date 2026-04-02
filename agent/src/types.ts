@@ -126,6 +126,7 @@ export type Config = {
   openaiApiKey: string
   posthogApiKey: string
   posthogProjectId: string
+  posthogApiBaseUrl: string  // e.g. https://eu.posthog.com or https://us.posthog.com
   githubToken: string
   githubOwner: string
   githubRepo: string

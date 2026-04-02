@@ -66,7 +66,7 @@ async function fetchPostDeployMetrics(
   // For the demo, we apply synthetic deltas to the baseline to simulate improvement.
   try {
     const response = await fetch(
-      `https://app.posthog.com/api/projects/${config.posthogProjectId}/insights/funnel/`,
+      `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/funnel/`,
       {
         method: "POST",
         headers: {
@@ -76,8 +76,8 @@ async function fetchPostDeployMetrics(
         body: JSON.stringify({
           insight: "FUNNELS",
           events: [
-            { id: "onboarding_start", order: 0 },
-            { id: "onboarding_complete", order: 1 },
+            { id: "clicked_get_started", order: 0 },
+            { id: "completed_onboarding", order: 1 },
           ],
           date_from: "-1d",
           funnel_window_interval: 1,

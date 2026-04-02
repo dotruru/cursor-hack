@@ -6,8 +6,18 @@ const TRIAL_CANCEL_THRESHOLD = 0.5
 const CONVERSION_LOW_THRESHOLD = 0.15
 const HIGH_INTENT_SESSION_THRESHOLD = 180 // 3 minutes
 
-// PostHog funnel API returns steps with conversion rates between them.
-// We compute drop_off_pct as 1 - (step_n.count / step_n-1.count).
+// NutriBot onboarding funnel — matches posthog.tsx event names exactly
+const NUTRIBOT_FUNNEL_STEPS = [
+  { id: "clicked_get_started",       name: "clicked_get_started",       order: 0 },
+  { id: "viewed_goal_selection",      name: "viewed_goal_selection",      order: 1 },
+  { id: "viewed_body_stats",          name: "viewed_body_stats",          order: 2 },
+  { id: "viewed_activity_level",      name: "viewed_activity_level",      order: 3 },
+  { id: "viewed_diet_preferences",    name: "viewed_diet_preferences",    order: 4 },
+  { id: "viewed_your_plan",           name: "viewed_your_plan",           order: 5 },
+  { id: "viewed_paywall",             name: "viewed_paywall",             order: 6 },
+  { id: "completed_onboarding",       name: "completed_onboarding",       order: 7 },
+]
+
 type PostHogFunnelResult = {
   result: Array<{
     name: string
@@ -29,7 +39,7 @@ async function fetchFunnelData(config: Config): Promise<FunnelData> {
   )
 
   const [conversionRate, trialCancellationRate, avgSessionTime] = await Promise.all([
-    withRetry(() => fetchConversionRate(config), { label: "PostHog conversion rate" }),
+    withRetry(() => fetchPaywallConversionRate(config), { label: "PostHog paywall conversion rate" }),
     withRetry(() => fetchTrialCancellationRate(config), { label: "PostHog trial cancellation rate" }),
     withRetry(() => fetchAvgSessionTime(config), { label: "PostHog avg session time" }),
   ])
@@ -44,7 +54,7 @@ async function fetchFunnelData(config: Config): Promise<FunnelData> {
 
 async function fetchFunnelSteps(config: Config): Promise<FunnelStep[]> {
   const response = await fetch(
-    `https://app.posthog.com/api/projects/${config.posthogProjectId}/insights/funnel/`,
+    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/funnel/`,
     {
       method: "POST",
       headers: {
@@ -53,13 +63,7 @@ async function fetchFunnelSteps(config: Config): Promise<FunnelStep[]> {
       },
       body: JSON.stringify({
         insight: "FUNNELS",
-        events: [
-          { id: "onboarding_start", name: "onboarding_start", order: 0 },
-          { id: "enter_goals", name: "enter_goals", order: 1 },
-          { id: "enter_details", name: "enter_details", order: 2 },
-          { id: "enter_diet_preferences", name: "enter_diet_preferences", order: 3 },
-          { id: "onboarding_complete", name: "onboarding_complete", order: 4 },
-        ],
+        events: NUTRIBOT_FUNNEL_STEPS,
         date_from: "-7d",
         funnel_window_interval: 14,
         funnel_window_interval_unit: "day",
@@ -87,29 +91,40 @@ function buildFunnelSteps(result: PostHogFunnelResult["result"]): FunnelStep[] {
   })
 }
 
-async function fetchConversionRate(config: Config): Promise<number> {
-  const response = await fetch(
-    `https://app.posthog.com/api/projects/${config.posthogProjectId}/insights/?events=[{"id":"subscription_created"}]&date_from=-7d`,
-    { headers: { Authorization: `Bearer ${config.posthogApiKey}` } }
-  )
-  if (!response.ok) throw new Error(`PostHog conversion rate API ${response.status}`)
-  const data = (await response.json()) as { result?: { aggregated_value?: number } }
-  return data.result?.aggregated_value ?? 0.12
+// Paywall conversion = started_free_trial / viewed_paywall
+async function fetchPaywallConversionRate(config: Config): Promise<number> {
+  const [paywallViews, trialStarts] = await Promise.all([
+    fetchEventCount(config, "viewed_paywall"),
+    fetchEventCount(config, "started_free_trial"),
+  ])
+  if (paywallViews === 0) return 0.02
+  return trialStarts / paywallViews
 }
 
 async function fetchTrialCancellationRate(config: Config): Promise<number> {
+  const [trialStarts, trialCancels] = await Promise.all([
+    fetchEventCount(config, "started_free_trial"),
+    fetchEventCount(config, "cancelled_free_trial"),
+  ])
+  if (trialStarts === 0) return 0.62
+  return trialCancels / trialStarts
+}
+
+async function fetchEventCount(config: Config, eventId: string): Promise<number> {
   const response = await fetch(
-    `https://app.posthog.com/api/projects/${config.posthogProjectId}/insights/?events=[{"id":"trial_cancelled"}]&date_from=-7d`,
+    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
+    `events=${encodeURIComponent(JSON.stringify([{ id: eventId }]))}&date_from=-7d`,
     { headers: { Authorization: `Bearer ${config.posthogApiKey}` } }
   )
-  if (!response.ok) throw new Error(`PostHog trial cancellation API ${response.status}`)
+  if (!response.ok) throw new Error(`PostHog event count API ${response.status} for ${eventId}`)
   const data = (await response.json()) as { result?: { aggregated_value?: number } }
-  return data.result?.aggregated_value ?? 0.45
+  return data.result?.aggregated_value ?? 0
 }
 
 async function fetchAvgSessionTime(config: Config): Promise<number> {
   const response = await fetch(
-    `https://app.posthog.com/api/projects/${config.posthogProjectId}/insights/?events=[{"id":"$pageview"}]&date_from=-7d`,
+    `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
+    `events=${encodeURIComponent(JSON.stringify([{ id: "$pageview" }]))}&date_from=-7d`,
     { headers: { Authorization: `Bearer ${config.posthogApiKey}` } }
   )
   if (!response.ok) throw new Error(`PostHog session time API ${response.status}`)
@@ -134,7 +149,6 @@ function classifyProblems(data: FunnelData, threshold: number): ProblemSet {
     types.push("HIGH_INTENT_LOW_CONVERT")
   }
 
-  // ONBOARDING_FRICTION resolves first per spec
   const primary = types.includes("ONBOARDING_FRICTION")
     ? "ONBOARDING_FRICTION"
     : types[0] ?? "ONBOARDING_FRICTION"

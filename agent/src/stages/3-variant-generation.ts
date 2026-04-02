@@ -16,6 +16,18 @@ import { verifyGeneratedVariants } from "../utils/verify-code.js"
 const CODEGEN_MAX_TOKENS = 4096
 const SELECTION_MAX_TOKENS = 512
 
+// NutriBot step index → screen component name (matches app/onboarding/screens/)
+const STEP_SCREEN_MAP: Record<number, string> = {
+  0: "Welcome",
+  1: "GoalSelection",
+  2: "BodyStats",
+  3: "ActivityLevel",
+  4: "DietPreferences",
+  5: "YourPlan",
+  6: "Paywall",
+  7: "Paywall", // completed_onboarding drop-off is fixed by improving the Paywall screen
+}
+
 // Variant strategy descriptions fed to GPT-4o so it can generate appropriately themed code
 const VARIANT_STRATEGIES: Record<VariantId, string> = {
   A: "Emotional/Aspirational — identity transformation framing, loss aversion copy, animated progress bar, one question per screen, before/after language",
@@ -44,7 +56,8 @@ export async function runVariantGeneration(
 
   const configCode = buildOnboardingConfig(selection.selected, problemSet.flagged_step_index)
   const replacedStepCode = variants.find((v) => v.id === selection.selected)?.code ?? currentStepSource
-  const replacedStepFilename = `src/components/onboarding/OnboardingStep${problemSet.flagged_step_index}.tsx`
+  const screenName = STEP_SCREEN_MAP[problemSet.flagged_step_index] ?? `Screen${problemSet.flagged_step_index}`
+  const replacedStepFilename = `app/onboarding/screens/${screenName}.tsx`
 
   const files: GeneratedFiles = {
     variants,
@@ -63,17 +76,21 @@ export async function runVariantGeneration(
 }
 
 async function loadCurrentStepSource(config: Config, stepIndex: number): Promise<string> {
+  const screenName = STEP_SCREEN_MAP[stepIndex] ?? `Screen${stepIndex}`
+  // Look for nutribot co-located in the parent directory (monorepo layout)
   const filePath = path.join(
     process.cwd(),
     "..",
     "nutribot",
-    `src/components/onboarding/OnboardingStep${stepIndex}.tsx`
+    "app",
+    "onboarding",
+    "screens",
+    `${screenName}.tsx`
   )
   try {
     return await readFile(filePath, "utf-8")
   } catch {
-    // Return a minimal placeholder when the source repo isn't co-located
-    return `// OnboardingStep${stepIndex}.tsx — source not found locally, generating fresh component\nexport default function OnboardingStep${stepIndex}() { return <div /> }`
+    return `// ${screenName}.tsx — source not found locally, generating fresh component\nexport default function ${screenName}() { return <div /> }`
   }
 }
 
@@ -164,7 +181,7 @@ function parseVariants(raw: string, stepIndex: number): GeneratedVariant[] {
     const code = match?.[1]?.trim() ?? buildFallbackVariant(id, stepIndex)
     variants.push({
       id,
-      filename: `src/components/onboarding/variants/Variant${id}.tsx`,
+      filename: `app/onboarding/screens/variants/Variant${id}.tsx`,
       code,
     })
   }

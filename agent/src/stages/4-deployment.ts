@@ -51,14 +51,14 @@ function buildFileSet(generatedFiles: GeneratedFiles, problemSet: ProblemSet): D
 
   // Update the config pointer to the selected variant
   files.push({
-    path: "src/config/onboarding.config.ts",
+    path: "lib/onboarding.config.ts",
     content: generatedFiles.configCode,
   })
 
   // Optional: lifetime deal component
   if (generatedFiles.lifetimeDealCode) {
     files.push({
-      path: "src/components/pricing/LifetimeDeal.tsx",
+      path: "app/onboarding/screens/LifetimeDeal.tsx",
       content: generatedFiles.lifetimeDealCode,
     })
   }
