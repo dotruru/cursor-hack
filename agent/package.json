@@ -4,9 +4,9 @@
   "description": "Autonomous agent that reads PostHog drop-off data, analyzes competitors, generates React variants, and deploys via GitHub",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "seed": "tsx src/seed-demo.ts",
-    "dev": "tsx watch src/index.ts"
+    "start": "node --env-file=.env --import=tsx/esm src/index.ts",
+    "seed": "node --env-file=.env --import=tsx/esm src/seed-demo.ts",
+    "dev": "node --env-file=.env --watch --import=tsx/esm src/index.ts"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.2",

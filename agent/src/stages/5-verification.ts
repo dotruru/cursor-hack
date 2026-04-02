@@ -70,7 +70,7 @@ async function fetchPostDeployMetrics(
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${config.posthogApiKey}`,
+          Authorization: `Bearer ${config.posthogPersonalApiKey}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

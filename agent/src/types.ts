@@ -124,7 +124,8 @@ export type PipelineContext = {
 
 export type Config = {
   openaiApiKey: string
-  posthogApiKey: string
+  posthogPersonalApiKey: string  // phx_... Personal API key — for REST API queries (insights/funnel)
+  posthogProjectApiKey: string   // phc_... Project API key — for posthog-node event capture (seed)
   posthogProjectId: string
   posthogApiBaseUrl: string  // e.g. https://eu.posthog.com or https://us.posthog.com
   githubToken: string

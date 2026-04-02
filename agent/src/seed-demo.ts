@@ -11,11 +11,11 @@
  */
 import { PostHog } from "posthog-node"
 
-const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY
-if (!POSTHOG_API_KEY) throw new Error("POSTHOG_API_KEY is required")
+const POSTHOG_PROJECT_API_KEY = process.env.POSTHOG_PROJECT_API_KEY
+if (!POSTHOG_PROJECT_API_KEY) throw new Error("POSTHOG_PROJECT_API_KEY is required")
 
 const POSTHOG_HOST = process.env.POSTHOG_HOST ?? "https://us.i.posthog.com"
-const client = new PostHog(POSTHOG_API_KEY, { host: POSTHOG_HOST })
+const client = new PostHog(POSTHOG_PROJECT_API_KEY, { host: POSTHOG_HOST })
 
 type FunnelStep = { event: string; completionRate: number }
 

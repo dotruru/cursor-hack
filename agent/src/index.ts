@@ -12,7 +12,8 @@ let isRunning = false
 function loadConfig(): Config {
   const required = [
     "OPENAI_API_KEY",
-    "POSTHOG_API_KEY",
+    "POSTHOG_PERSONAL_API_KEY",
+    "POSTHOG_PROJECT_API_KEY",
     "POSTHOG_PROJECT_ID",
     "GITHUB_TOKEN",
     "GITHUB_OWNER",
@@ -27,7 +28,8 @@ function loadConfig(): Config {
 
   return {
     openaiApiKey: process.env.OPENAI_API_KEY!,
-    posthogApiKey: process.env.POSTHOG_API_KEY!,
+    posthogPersonalApiKey: process.env.POSTHOG_PERSONAL_API_KEY!,
+    posthogProjectApiKey: process.env.POSTHOG_PROJECT_API_KEY!,
     posthogProjectId: process.env.POSTHOG_PROJECT_ID!,
     posthogApiBaseUrl: derivePostHogApiBaseUrl(process.env.POSTHOG_HOST),
     githubToken: process.env.GITHUB_TOKEN!,

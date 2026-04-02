@@ -58,7 +58,7 @@ async function fetchFunnelSteps(config: Config): Promise<FunnelStep[]> {
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.posthogApiKey}`,
+        Authorization: `Bearer ${config.posthogPersonalApiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -114,7 +114,7 @@ async function fetchEventCount(config: Config, eventId: string): Promise<number>
   const response = await fetch(
     `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
     `events=${encodeURIComponent(JSON.stringify([{ id: eventId }]))}&date_from=-7d`,
-    { headers: { Authorization: `Bearer ${config.posthogApiKey}` } }
+    { headers: { Authorization: `Bearer ${config.posthogPersonalApiKey}` } }
   )
   if (!response.ok) throw new Error(`PostHog event count API ${response.status} for ${eventId}`)
   const data = (await response.json()) as { result?: { aggregated_value?: number } }
@@ -125,7 +125,7 @@ async function fetchAvgSessionTime(config: Config): Promise<number> {
   const response = await fetch(
     `${config.posthogApiBaseUrl}/api/projects/${config.posthogProjectId}/insights/?` +
     `events=${encodeURIComponent(JSON.stringify([{ id: "$pageview" }]))}&date_from=-7d`,
-    { headers: { Authorization: `Bearer ${config.posthogApiKey}` } }
+    { headers: { Authorization: `Bearer ${config.posthogPersonalApiKey}` } }
   )
   if (!response.ok) throw new Error(`PostHog session time API ${response.status}`)
   const data = (await response.json()) as { result?: { average_session_duration?: number } }
