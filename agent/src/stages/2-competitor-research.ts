@@ -26,6 +26,7 @@ export async function runCompetitorResearch(
   problemSet: ProblemSet
 ): Promise<{ patternLibrary: PatternLibrary; screenshotsAnalyzed: number }> {
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
+  console.log(`[Stage 2] Vision model: ${config.openaiVisionModel}`)
   const matchedFiles = await findMatchingScreenshots(
     config.competitorScreenshotsDir,
     problemSet.flagged_step_index
@@ -39,7 +40,7 @@ export async function runCompetitorResearch(
   console.log(`[Stage 2] Analyzing ${matchedFiles.length} competitor screenshot(s)`)
 
   const analyses = await Promise.all(
-    matchedFiles.map((file) => analyzeScreenshot(openai, file))
+    matchedFiles.map((file) => analyzeScreenshot(openai, config.openaiVisionModel, file))
   )
 
   const patternLibrary = aggregatePatterns(analyses)
@@ -57,8 +58,6 @@ async function findMatchingScreenshots(screenshotsDir: string, stepIndex: number
 
   console.log(`[Stage 2] Directory: ${screenshotsDir} (${entries.length} files)`)
 
-  const paddedIndex = String(stepIndex).padStart(2, "0")
-  // Match _07_ or _7_ style step markers
   const regex = new RegExp(`_0*${String(stepIndex)}_`)
   const matched = entries.filter((name) => regex.test(name) && name.endsWith(".png"))
 
@@ -69,11 +68,11 @@ async function findMatchingScreenshots(screenshotsDir: string, stepIndex: number
   return matched.map((name) => path.join(screenshotsDir, name))
 }
 
-async function analyzeScreenshot(openai: OpenAI, filePath: string): Promise<ScreenAnalysis> {
+async function analyzeScreenshot(openai: OpenAI, visionModel: string, filePath: string): Promise<ScreenAnalysis> {
   const base64 = await loadImageAsBase64(filePath)
 
   const response = await openai.chat.completions.create({
-    model: "gpt-4o",
+    model: visionModel,
     max_tokens: VISION_MAX_TOKENS,
     messages: [
       { role: "system", content: VISION_SYSTEM_PROMPT },

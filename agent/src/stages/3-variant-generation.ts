@@ -12,9 +12,10 @@ import type {
   VariantSelection,
 } from "../types.js"
 import { verifyGeneratedVariants } from "../utils/verify-code.js"
+import { callCompletion } from "../utils/openai-call.js"
 
-const CODEGEN_MAX_TOKENS = 4096
-const SELECTION_MAX_TOKENS = 512
+const CODEGEN_MAX_TOKENS = 8192   // o3 benefits from higher token budget for complete components
+const SELECTION_MAX_TOKENS = 1024
 
 // NutriBot step index → screen component name (matches app/onboarding/screens/)
 const STEP_SCREEN_MAP: Record<number, string> = {
@@ -45,14 +46,14 @@ export async function runVariantGeneration(
 
   const currentStepSource = await loadCurrentStepSource(config, problemSet.flagged_step_index)
 
-  console.log(`[Stage 3] Generating 3 React variants for step: ${problemSet.flagged_step}`)
-  const rawVariants = await generateVariants(openai, currentStepSource, problemSet, patternLibrary)
+  console.log(`[Stage 3] Generating 3 React variants for step: ${problemSet.flagged_step} (model: ${config.openaiCodegenModel})`)
+  const rawVariants = await generateVariants(openai, config.openaiCodegenModel, currentStepSource, problemSet, patternLibrary)
 
   console.log(`[Stage 3] Verifying generated TypeScript`)
   const variants = await verifyAndRepairVariants(rawVariants, problemSet.flagged_step_index)
 
   console.log(`[Stage 3] Self-selecting best variant`)
-  const selection = await selectVariant(openai, funnelData, problemSet, variants)
+  const selection = await selectVariant(openai, config.openaiCodegenModel, funnelData, problemSet, variants)
 
   const configCode = buildOnboardingConfig(selection.selected, problemSet.flagged_step_index)
   const replacedStepCode = variants.find((v) => v.id === selection.selected)?.code ?? currentStepSource
@@ -69,7 +70,7 @@ export async function runVariantGeneration(
 
   if (problemSet.types.includes("HIGH_INTENT_LOW_CONVERT")) {
     console.log(`[Stage 3] Generating LifetimeDeal component (HIGH_INTENT_LOW_CONVERT active)`)
-    files.lifetimeDealCode = await generateLifetimeDeal(openai, patternLibrary)
+    files.lifetimeDealCode = await generateLifetimeDeal(openai, config.openaiCodegenModel, patternLibrary)
   }
 
   return files
@@ -96,6 +97,7 @@ async function loadCurrentStepSource(config: Config, stepIndex: number): Promise
 
 async function generateVariants(
   openai: OpenAI,
+  model: string,
   currentSource: string,
   problemSet: ProblemSet,
   patternLibrary: PatternLibrary
@@ -145,13 +147,11 @@ Strategy: ${VARIANT_STRATEGIES.C}
 // complete component code
 \`\`\``
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    max_tokens: CODEGEN_MAX_TOKENS,
+  const raw = await callCompletion(openai, {
+    model,
     messages: [{ role: "user", content: prompt }],
+    maxTokens: CODEGEN_MAX_TOKENS,
   })
-
-  const raw = response.choices[0]?.message?.content ?? ""
   return parseVariants(raw, problemSet.flagged_step_index)
 }
 
@@ -191,6 +191,7 @@ function parseVariants(raw: string, stepIndex: number): GeneratedVariant[] {
 
 async function selectVariant(
   openai: OpenAI,
+  model: string,
   funnelData: FunnelData,
   problemSet: ProblemSet,
   variants: GeneratedVariant[]
@@ -216,13 +217,11 @@ C: ${VARIANT_STRATEGIES.C}
 Return JSON only:
 { "selected": "A" | "B" | "C", "reasoning": "one sentence" }`
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    max_tokens: SELECTION_MAX_TOKENS,
+  const raw = await callCompletion(openai, {
+    model,
     messages: [{ role: "user", content: prompt }],
+    maxTokens: SELECTION_MAX_TOKENS,
   })
-
-  const raw = response.choices[0]?.message?.content ?? '{"selected":"A","reasoning":"default"}'
   return parseSelection(raw, funnelData, problemSet)
 }
 
@@ -268,7 +267,7 @@ type OnboardingConfig = {
 `
 }
 
-async function generateLifetimeDeal(openai: OpenAI, patternLibrary: PatternLibrary): Promise<string> {
+async function generateLifetimeDeal(openai: OpenAI, model: string, patternLibrary: PatternLibrary): Promise<string> {
   const prompt = `Generate a LifetimeDeal.tsx React + Tailwind component for a calorie tracking app (NutriBot).
 
 This is shown at the paywall for high-intent users who haven't converted.
@@ -283,13 +282,12 @@ Requirements:
 
 Return only the TSX code, no markdown fences.`
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    max_tokens: 2048,
+  const raw = await callCompletion(openai, {
+    model,
     messages: [{ role: "user", content: prompt }],
+    maxTokens: 2048,
   })
-
-  return response.choices[0]?.message?.content?.replace(/```tsx?\n?/g, "").replace(/```\n?/g, "").trim() ?? ""
+  return raw.replace(/```tsx?\n?/g, "").replace(/```\n?/g, "").trim()
 }
 
 function buildFallbackVariant(id: VariantId, stepIndex: number): string {

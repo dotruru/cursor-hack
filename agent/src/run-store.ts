@@ -37,6 +37,11 @@ export type PipelineThinking = {
   }
 }
 
+export type ScreenshotPair = {
+  beforePath: string | null
+  afterPath: string | null
+}
+
 export type RunRecord = {
   id: string
   triggeredBy: string
@@ -45,6 +50,7 @@ export type RunRecord = {
   durationMs?: number
   status: RunStatus
   thinking: PipelineThinking
+  screenshots?: ScreenshotPair
   report?: AgentReport
   error?: string
 }
@@ -67,6 +73,10 @@ export function startRun(triggeredBy: string): RunRecord {
 
 export function updateRunThinking(record: RunRecord, partial: Partial<PipelineThinking>): void {
   Object.assign(record.thinking, partial)
+}
+
+export function setRunScreenshots(record: RunRecord, screenshots: ScreenshotPair): void {
+  record.screenshots = screenshots
 }
 
 export function completeRun(record: RunRecord, report: AgentReport): void {

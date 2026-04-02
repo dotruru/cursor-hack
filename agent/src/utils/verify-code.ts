@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile, rm } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { spawn } from "child_process"
 import type { GeneratedVariant } from "../types.js"
 
@@ -10,29 +11,40 @@ type VerifyResult = {
   errors: string
 }
 
-// Minimal tsconfig for generated React/Tailwind components.
-// Uses permissive settings so pure syntax errors still surface
-// without requiring full project deps to be present.
-const TEMP_TSCONFIG = {
-  compilerOptions: {
-    target: "ES2020",
-    module: "ESNext",
-    moduleResolution: "bundler",
-    jsx: "react-jsx",
-    strict: false,
-    noEmit: true,
-    skipLibCheck: true,
-    noUnusedLocals: false,
-    lib: ["ES2020", "DOM"],
-  },
-  include: ["*.tsx"],
+// Point the temp project at the agent's own node_modules so React types resolve.
+// This eliminates "Cannot find module 'react'" false positives on generated components.
+const agentRoot = fileURLToPath(new URL("../../..", import.meta.url))
+const agentNodeModules = path.join(agentRoot, "node_modules")
+
+function buildTempTsconfig(): object {
+  return {
+    compilerOptions: {
+      target: "ES2020",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      jsx: "react-jsx",
+      jsxImportSource: "react",
+      strict: false,
+      noEmit: true,
+      skipLibCheck: true,
+      noUnusedLocals: false,
+      lib: ["ES2020", "DOM"],
+      baseUrl: ".",
+      paths: {
+        react: [`${agentNodeModules}/react/index.js`],
+        "react/jsx-runtime": [`${agentNodeModules}/react/jsx-runtime.js`],
+      },
+      typeRoots: [`${agentNodeModules}/@types`],
+    },
+    include: ["*.tsx"],
+  }
 }
 
 export async function verifyGeneratedVariants(variants: GeneratedVariant[]): Promise<VerifyResult> {
   const tempDir = await mkdtemp(path.join(tmpdir(), "nutribot-codegen-"))
 
   try {
-    await writeFile(path.join(tempDir, "tsconfig.json"), JSON.stringify(TEMP_TSCONFIG, null, 2))
+    await writeFile(path.join(tempDir, "tsconfig.json"), JSON.stringify(buildTempTsconfig(), null, 2))
 
     for (const variant of variants) {
       const filename = path.basename(variant.filename)
@@ -46,8 +58,9 @@ export async function verifyGeneratedVariants(variants: GeneratedVariant[]): Pro
 }
 
 async function runTsc(tempDir: string, variants: GeneratedVariant[]): Promise<VerifyResult> {
+  const tscBin = path.join(agentNodeModules, ".bin", "tsc")
+
   return new Promise((resolve) => {
-    const tscBin = new URL("../../node_modules/.bin/tsc", import.meta.url).pathname
     const proc = spawn(tscBin, ["--noEmit"], { cwd: tempDir, shell: false })
 
     let output = ""
@@ -60,7 +73,6 @@ async function runTsc(tempDir: string, variants: GeneratedVariant[]): Promise<Ve
     })
 
     proc.on("error", () => {
-      // tsc unavailable in environment — skip check rather than block the pipeline
       resolve({ valid: true, failedVariants: [], errors: "" })
     })
   })

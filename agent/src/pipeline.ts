@@ -3,7 +3,8 @@ import { runCompetitorResearch } from "./stages/2-competitor-research.js"
 import { runVariantGeneration } from "./stages/3-variant-generation.js"
 import { runDeployment } from "./stages/4-deployment.js"
 import { runVerification } from "./stages/5-verification.js"
-import { startRun, completeRun, failRun, updateRunThinking } from "./run-store.js"
+import { startRun, completeRun, failRun, updateRunThinking, setRunScreenshots } from "./run-store.js"
+import { captureBeforeAfter, SCREENSHOTS_DIR } from "./utils/screenshot.js"
 import type { AgentReport, Config } from "./types.js"
 
 export async function runPipeline(config: Config, triggeredBy = "manual"): Promise<AgentReport> {
@@ -78,8 +79,17 @@ export async function runPipeline(config: Config, triggeredBy = "manual"): Promi
 
     console.log(`  Selected: Variant ${generatedFiles.selected.selected} — ${generatedFiles.selected.reasoning}`)
 
-    // Stage 4
+    // Stage 4 — take "before" screenshot, deploy, take "after" screenshot
     console.log("\n[Stage 4] Deployment")
+
+    let screenshotPair = { beforePath: null as string | null, afterPath: null as string | null }
+    if (config.nutriBotUrl) {
+      console.log(`  [Screenshot] Capturing before state: ${config.nutriBotUrl}`)
+      const pair = await captureBeforeAfter(config.nutriBotUrl, runRecord.id)
+      screenshotPair = pair
+      setRunScreenshots(runRecord, pair)
+    }
+
     const deployment = await runDeployment(config, generatedFiles, problemSet)
 
     updateRunThinking(runRecord, {
@@ -91,6 +101,9 @@ export async function runPipeline(config: Config, triggeredBy = "manual"): Promi
     })
 
     console.log(`  Commit: ${deployment.commitSha.slice(0, 8)} — ${deployment.commitUrl}`)
+    if (screenshotPair.afterPath) {
+      console.log(`  Screenshots saved: ${SCREENSHOTS_DIR}/${runRecord.id}/`)
+    }
 
     // Stage 5
     console.log("\n[Stage 5] Verification")

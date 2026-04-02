@@ -6,6 +6,7 @@ import { runPipeline } from "./pipeline.js"
 import { getAllRuns, getLatestRun, getLatestCompletedRun, skipRun } from "./run-store.js"
 import type { RunRecord } from "./run-store.js"
 import type { Config } from "./types.js"
+import { SCREENSHOTS_DIR } from "./utils/screenshot.js"
 
 let isRunning = false
 
@@ -28,6 +29,8 @@ function loadConfig(): Config {
 
   return {
     openaiApiKey: process.env.OPENAI_API_KEY!,
+    openaiCodegenModel: process.env.OPENAI_CODEGEN_MODEL ?? "o3",
+    openaiVisionModel: process.env.OPENAI_VISION_MODEL ?? "gpt-4o",
     posthogPersonalApiKey: process.env.POSTHOG_PERSONAL_API_KEY!,
     posthogProjectApiKey: process.env.POSTHOG_PROJECT_API_KEY!,
     posthogProjectId: process.env.POSTHOG_PROJECT_ID!,
@@ -37,6 +40,7 @@ function loadConfig(): Config {
     githubRepo: process.env.GITHUB_REPO!,
     slackWebhookUrl: process.env.SLACK_WEBHOOK_URL!,
     vercelDeployHookUrl: process.env.VERCEL_DEPLOY_HOOK_URL,
+    nutriBotUrl: process.env.NUTRIBOT_URL,
     dropOffThreshold: parseFloat(process.env.DROP_OFF_THRESHOLD ?? "0.3"),
     competitorScreenshotsDir: path.resolve(
       process.env.COMPETITOR_SCREENSHOTS_DIR ??
@@ -248,6 +252,46 @@ function buildMetricCards(record: RunRecord | undefined): string {
   }).join("\n")
 }
 
+function buildScreenshotsSection(record: RunRecord | undefined): string {
+  if (!record?.screenshots) {
+    const hint = record
+      ? `Set <code>NUTRIBOT_URL</code> in .env to enable automatic before/after screenshots`
+      : `No completed run yet`
+    return `
+    <div class="screenshots-section">
+      <h3>Before / After</h3>
+      <p style="color:var(--muted);font-size:0.82rem;font-style:italic">${hint}</p>
+    </div>`
+  }
+
+  const runId = record.id
+  const beforeSrc = record.screenshots.beforePath ? `/screenshots/${runId}/before.png` : null
+  const afterSrc = record.screenshots.afterPath ? `/screenshots/${runId}/after.png` : null
+
+  const beforeCell = beforeSrc
+    ? `<img class="screenshot-img" src="${beforeSrc}" alt="Before" loading="lazy">`
+    : `<div class="screenshot-placeholder">Screenshot not available</div>`
+
+  const afterCell = afterSrc
+    ? `<img class="screenshot-img" src="${afterSrc}" alt="After" loading="lazy">`
+    : `<div class="screenshot-placeholder">Capturing after Vercel deploy…</div>`
+
+  return `
+  <div class="screenshots-section">
+    <h3>Before / After — ${record.thinking.stage4?.commitSha?.slice(0, 8) ?? "latest deploy"}</h3>
+    <div class="screenshot-grid">
+      <div class="screenshot-card">
+        <div class="screenshot-label"><span class="dot dot-before"></span>Before deploy</div>
+        ${beforeCell}
+      </div>
+      <div class="screenshot-card">
+        <div class="screenshot-label"><span class="dot dot-after"></span>After deploy (~35s Vercel)</div>
+        ${afterCell}
+      </div>
+    </div>
+  </div>`
+}
+
 function buildRunHistoryRows(allRuns: RunRecord[]): string {
   if (allRuns.length === 0) {
     return `<tr><td colspan="5" class="empty-row">No runs yet — agent is waiting for a trigger</td></tr>`
@@ -436,6 +480,19 @@ function buildDashboardHtml(): string {
     .footer { margin-top: 1.5rem; font-size: 0.72rem; color: var(--muted); display: flex; justify-content: space-between; }
     .footer a { color: var(--muted); text-decoration: none; }
     .footer a:hover { text-decoration: underline; }
+
+    /* ── Before/After screenshots ────────────────────────────────────── */
+    .screenshots-section { margin-top: 1.5rem; }
+    .screenshots-section h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.75rem; }
+    .screenshot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 700px) { .screenshot-grid { grid-template-columns: 1fr; } }
+    .screenshot-card { background: var(--card); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+    .screenshot-label { padding: 0.6rem 1rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem; }
+    .screenshot-label .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot-before { background: var(--accent); }
+    .dot-after  { background: var(--accent-pos); }
+    .screenshot-img { width: 100%; height: auto; display: block; }
+    .screenshot-placeholder { height: 200px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.8rem; font-style: italic; }
   </style>
 </head>
 <body>
@@ -473,6 +530,8 @@ function buildDashboardHtml(): string {
       ${buildMetricCards(latestCompleted)}
     </div>
   </div>
+
+  ${buildScreenshotsSection(latestCompleted)}
 
   <!-- Run history -->
   <div class="history-section">
@@ -514,6 +573,9 @@ function startWebhookServer(config: Config): void {
       (req as express.Request & { rawBody?: string }).rawBody = buf.toString()
     },
   }))
+
+  // Serve screenshot PNG files
+  app.use("/screenshots", express.static(SCREENSHOTS_DIR))
 
   // ── Dashboard ─────────────────────────────────────────────────────────────
   app.get("/", (_req, res) => {

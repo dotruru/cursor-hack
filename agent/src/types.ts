@@ -124,15 +124,18 @@ export type PipelineContext = {
 
 export type Config = {
   openaiApiKey: string
-  posthogPersonalApiKey: string  // phx_... Personal API key — for REST API queries (insights/funnel)
-  posthogProjectApiKey: string   // phc_... Project API key — for posthog-node event capture (seed)
+  openaiCodegenModel: string     // e.g. o3, o1, gpt-4o — used for Stage 3 code generation
+  openaiVisionModel: string      // e.g. gpt-4o — must support vision (image inputs)
+  posthogPersonalApiKey: string  // phx_... Personal API key — for REST API queries
+  posthogProjectApiKey: string   // phc_... Project API key — for event capture (seed)
   posthogProjectId: string
-  posthogApiBaseUrl: string  // e.g. https://eu.posthog.com or https://us.posthog.com
+  posthogApiBaseUrl: string      // e.g. https://eu.posthog.com
   githubToken: string
   githubOwner: string
   githubRepo: string
   slackWebhookUrl: string
   vercelDeployHookUrl?: string
+  nutriBotUrl?: string           // e.g. https://nutribot.vercel.app — for before/after screenshots
   dropOffThreshold: number
   competitorScreenshotsDir: string
 }
