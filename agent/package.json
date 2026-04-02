@@ -1,0 +1,26 @@
+{
+  "name": "onboarding-optimizer-agent",
+  "version": "1.0.0",
+  "description": "Autonomous agent that reads PostHog drop-off data, analyzes competitors, generates React variants, and deploys via GitHub",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "seed": "tsx src/seed-demo.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.2",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "openai": "^4.77.3",
+    "posthog-node": "^4.3.2",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.7",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
